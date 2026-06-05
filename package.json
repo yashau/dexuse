@@ -1,6 +1,6 @@
 {
   "name": "dexuse",
-  "version": "2026.6.5-1",
+  "version": "2026.6.501",
   "description": "Fancy terminal usage explorer for Codex, Hermes, and OpenClaw token history",
   "bin": {
     "dexuse": "scripts/dexuse.js"

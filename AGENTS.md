@@ -63,19 +63,30 @@ Example:
 2026.6.5.1
 ```
 
-Use this exact dotted form for CLI output, Git tags, and GitHub releases. Cargo and npm require SemVer and cannot store four numeric components, so package metadata uses the nearest compatible prerelease form:
+Use this exact dotted form for CLI output, Git tags, and GitHub releases.
+
+Cargo and npm require SemVer and cannot store four numeric components. Package metadata uses an npm-stable patch encoding:
 
 ```text
-2026.6.5-1
+YYYY.M.DNN
 ```
+
+where `NN` is the two-digit daily release number. Examples:
+
+```text
+2026.6.5.1  -> 2026.6.501
+2026.6.5.12 -> 2026.6.512
+```
+
+Do not use `YYYY.M.D-n` for npm releases unless intentionally publishing a prerelease tag; npm treats that as prerelease and requires `--tag`.
 
 When cutting a new release on the same day, increment only `n`. Update:
 
 - `src/version.rs` display version
-- `Cargo.toml` package version
-- `package.json` package version
+- `Cargo.toml` package version, encoded as `YYYY.M.DNN`
+- `package.json` package version, encoded as `YYYY.M.DNN`
 - `Cargo.lock` via `cargo update -p dexuse --precise <semver-version>`
-- `pnpm-lock.yaml` via `pnpm install --lockfile-only`
+- lockfiles via the package manager if dependencies or package metadata require it
 
 ## TUI expectations
 

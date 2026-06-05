@@ -3,6 +3,7 @@
 pub const DISPLAY_VERSION: &str = "2026.6.5.1";
 
 /// Cargo and npm require SemVer, which cannot represent four numeric
-/// components. Package metadata uses the closest SemVer-compatible form;
+/// components. Package metadata encodes the daily build into the patch
+/// number as `YYYY.M.DNN`, so `2026.6.5.1` becomes `2026.6.501`.
 /// CLI output, release tags, and GitHub releases use `DISPLAY_VERSION`.
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
