@@ -15,14 +15,23 @@ This repo is a Rust/Ratatui CLI packaged for `npx @yashau/dexuse` with a `dexuse
 - npm wrapper: `scripts/dexuse.js`
 - screenshot harness: `scripts/render_tui_screenshots.cjs`
 - deterministic usage fixtures: `fixtures/usage/`
-- package manager: `pnpm` (`packageManager` is pinned in `package.json`)
-- task runner: `mise`
+- primary repo tool: `mise` (`mise.toml` pins Rust/Node and defines install, quality gates, build, bundle, screenshot, smoke, and packaging tasks)
+- JS package manager: `pnpm` (`packageManager` is pinned in `package.json`)
 
-Use `pnpm`, not npm, when managing JS dependencies.
+Use `mise` first for repo workflows (`mise install`, `mise run check`, `mise run screenshots`, `mise run pack`). Use `pnpm`, not npm, when managing JS dependencies directly.
 
 ## Quality gates
 
-Before saying a change is done, run the relevant subset. For user-facing, parser, fixture, or packaging changes, run all of them:
+Before saying a change is done, run the relevant `mise` task subset. For user-facing, parser, fixture, or packaging changes, run the primary gate and any artifact-specific tasks:
+
+```bash
+mise install
+mise run check
+mise run screenshots
+mise run pack
+```
+
+Underlying commands, useful when isolating a failing step:
 
 ```bash
 cargo fmt --check
@@ -33,14 +42,6 @@ cargo build --release
 python scripts/bundle_current.py
 pnpm run screenshots
 pnpm pack --dry-run
-```
-
-Mise equivalents:
-
-```bash
-mise run check
-mise run screenshots
-mise run pack
 ```
 
 Notes:

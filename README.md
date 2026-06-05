@@ -33,9 +33,12 @@ npx @yashau/dexuse
 From a checkout:
 
 ```bash
-pnpm install
-cargo run --release --
+mise install
+mise run bundle
+pnpm exec dexuse
 ```
+
+`mise` is the primary repo tool: it installs the pinned Rust/Node toolchains and owns the repeatable local tasks for formatting, tests, builds, screenshots, package checks, and release-binary bundling. Use the direct `cargo`/`pnpm` commands below only as lower-level fallbacks.
 
 ## Handy moves
 
@@ -110,6 +113,8 @@ Codex, Hermes, and OpenClaw are harnesses over local OpenAI/Codex-style usage lo
 
 ## Ship it locally
 
+Use `mise` for setup and quality gates:
+
 ```bash
 mise install
 mise run check
@@ -117,7 +122,7 @@ mise run screenshots
 mise run pack
 ```
 
-Direct commands work too:
+Direct commands work too when you need to debug a single underlying step:
 
 ```bash
 cargo fmt --check
