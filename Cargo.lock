@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "dexuse"
-version = "2026.6.502"
+version = "2026.6.503"
 dependencies = [
  "anyhow",
  "assert_cmd",

@@ -6,7 +6,7 @@
 
 **OpenAI / Codex token usage, finally visible.**
 
-`dexuse` turns local OpenAI/Codex-style usage history into a polished terminal dashboard with timelines, model splits, source breakdowns, cache reads, reasoning tokens, and JSON export.
+`dexuse` turns local OpenAI/Codex-style usage history into a polished terminal dashboard with timelines, model splits, source breakdowns, cache reads, reasoning tokens, Codex quota badges, and JSON export.
 
 [![Rust](https://img.shields.io/badge/Rust-fast-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-fancy_af-8b5cf6?style=for-the-badge)](#screenshots) [![npx](https://img.shields.io/badge/one_liner-npx-cb3837?style=for-the-badge&logo=npm)](#one-liner)
 
@@ -20,6 +20,7 @@ OpenAI/Codex tools leave token history scattered around your machine. `dexuse` p
 - How much was cached instead of fresh input?
 - Did it come from Codex, Hermes, or OpenClaw?
 - What changed by day, week, month, or year?
+- How much Codex quota is left in the 5-hour and 7-day windows?
 - Can I get the same totals as JSON? Yep.
 
 No cloud account. No upload. It reads local files only.
@@ -105,7 +106,7 @@ npx @yashau/dexuse --openclaw-home ~/.openclaw
 - API calls
 - estimated cost when the source provides it
 
-JSON output includes totals, time buckets, model splits, provider splits, and source splits.
+JSON output includes totals, time buckets, model splits, provider splits, source splits, and `codex_quota` when quota probing is available.
 
 ## Built for more OpenAI/Codex sources
 

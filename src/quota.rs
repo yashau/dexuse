@@ -1,5 +1,5 @@
 use chrono::{Local, TimeZone};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     ffi::OsString,
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CodexQuota {
     pub five_hour_remaining_percent: u8,
     pub five_hour_resets_at: i64,
@@ -41,6 +41,9 @@ pub enum CodexAuthStatus {
 }
 
 pub fn fetch_codex_quota() -> Option<CodexQuota> {
+    if let Some(quota) = injected_codex_quota() {
+        return Some(quota);
+    }
     if std::env::var_os("DEXUSE_DISABLE_CODEX_QUOTA").is_some() {
         return None;
     }
@@ -60,6 +63,11 @@ pub fn fetch_codex_quota() -> Option<CodexQuota> {
         return Some(quota);
     }
     query_openclaw_quota()
+}
+
+fn injected_codex_quota() -> Option<CodexQuota> {
+    let raw = std::env::var("DEXUSE_CODEX_QUOTA_JSON").ok()?;
+    serde_json::from_str::<CodexQuota>(&raw).ok()
 }
 
 pub fn parse_quota_messages(messages: &[Value]) -> Option<CodexQuota> {

@@ -26,6 +26,12 @@ const FIXTURE_ARGS = [
   '--to', '2026-06-06',
   '--granularity', 'day'
 ];
+const SCREENSHOT_CODEX_QUOTA = JSON.stringify({
+  five_hour_remaining_percent: 74,
+  five_hour_resets_at: 1780513413,
+  seven_day_remaining_percent: 19,
+  seven_day_resets_at: 1781118213
+});
 fs.mkdirSync(OUT, { recursive: true });
 
 const scriptTimeout = setTimeout(() => {
@@ -177,7 +183,7 @@ async function capture(name, title, keys = []) {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       RUST_BACKTRACE: '1',
-      DEXUSE_DISABLE_CODEX_QUOTA: '1'
+      DEXUSE_CODEX_QUOTA_JSON: SCREENSHOT_CODEX_QUOTA
     }
   });
 

@@ -1,6 +1,6 @@
 [package]
 name = "dexuse"
-version = "2026.6.502"
+version = "2026.6.503"
 edition = "2024"
 description = "Fancy terminal usage explorer for Codex, Hermes, and OpenClaw token history"
 license = "MIT"
