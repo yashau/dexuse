@@ -8,3 +8,4 @@ pub mod output;
 pub mod paths;
 pub mod sources;
 pub mod tui;
+pub mod version;

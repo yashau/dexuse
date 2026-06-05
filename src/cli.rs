@@ -7,8 +7,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "dexuse",
-    version,
-    about = "Explore OpenAI Codex and Hermes usage"
+    version = crate::version::DISPLAY_VERSION,
+    about = "Explore Codex, Hermes, and OpenClaw usage"
 )]
 pub struct Args {
     #[arg(long, help = "Emit machine-readable JSON and skip the TUI")]

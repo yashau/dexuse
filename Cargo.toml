@@ -1,8 +1,8 @@
 [package]
 name = "dexuse"
-version = "0.1.0"
+version = "2026.6.5-1"
 edition = "2024"
-description = "Rich terminal usage explorer for OpenAI Codex and Hermes sessions"
+description = "Fancy terminal usage explorer for Codex, Hermes, and OpenClaw token history"
 license = "MIT"
 
 [dependencies]

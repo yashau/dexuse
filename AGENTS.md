@@ -49,6 +49,34 @@ Notes:
 - `scripts/with_timeout.py` is the preferred timeout wrapper in automation.
 - Miri uses nightly. Hermes SQLite tests are ignored under Miri because SQLite/file FFI is not supported by Miri on Windows.
 
+## Versioning
+
+Human-facing releases use calendar-build versions:
+
+```text
+YYYY.M.D.n
+```
+
+Example:
+
+```text
+2026.6.5.1
+```
+
+Use this exact dotted form for CLI output, Git tags, and GitHub releases. Cargo and npm require SemVer and cannot store four numeric components, so package metadata uses the nearest compatible prerelease form:
+
+```text
+2026.6.5-1
+```
+
+When cutting a new release on the same day, increment only `n`. Update:
+
+- `src/version.rs` display version
+- `Cargo.toml` package version
+- `package.json` package version
+- `Cargo.lock` via `cargo update -p dexuse --precise <semver-version>`
+- `pnpm-lock.yaml` via `pnpm install --lockfile-only`
+
 ## TUI expectations
 
 The dashboard should look dense and polished, not like a plain debug view.
