@@ -1,5 +1,5 @@
 {
-  "name": "dexuse",
+  "name": "@yashau/dexuse",
   "version": "2026.6.501",
   "description": "Fancy terminal usage explorer for Codex, Hermes, and OpenClaw token history",
   "bin": {

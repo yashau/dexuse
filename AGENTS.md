@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo is a Rust/Ratatui CLI packaged for `npx dexuse`. Keep it fast, local-first, modular, and screenshot-polished.
+This repo is a Rust/Ratatui CLI packaged for `npx @yashau/dexuse` with a `dexuse` binary. Keep it fast, local-first, modular, and screenshot-polished.
 
 ## Product promise
 

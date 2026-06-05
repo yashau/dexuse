@@ -27,7 +27,7 @@ No cloud account. No upload. It reads local files only.
 ## One-liner
 
 ```bash
-npx dexuse
+npx @yashau/dexuse
 ```
 
 From a checkout:
@@ -40,12 +40,12 @@ cargo run --release --
 ## Handy moves
 
 ```bash
-npx dexuse
-npx dexuse --json
-npx dexuse --json --from 2026-06-01 --to 2026-06-06 --granularity day
-npx dexuse --codex-only
-npx dexuse --hermes-only
-npx dexuse --openclaw-only
+npx @yashau/dexuse
+npx @yashau/dexuse --json
+npx @yashau/dexuse --json --from 2026-06-01 --to 2026-06-06 --granularity day
+npx @yashau/dexuse --codex-only
+npx @yashau/dexuse --hermes-only
+npx @yashau/dexuse --openclaw-only
 ```
 
 `dexuse` automatically looks in the usual places:
@@ -57,9 +57,9 @@ npx dexuse --openclaw-only
 Need a custom path?
 
 ```bash
-npx dexuse --codex-home ~/.codex
-npx dexuse --hermes-home ~/.hermes
-npx dexuse --openclaw-home ~/.openclaw
+npx @yashau/dexuse --codex-home ~/.codex
+npx @yashau/dexuse --hermes-home ~/.hermes
+npx @yashau/dexuse --openclaw-home ~/.openclaw
 ```
 
 ## Screenshots

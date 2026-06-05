@@ -150,7 +150,7 @@ def models():
 def jsonshot():
     img, d = base("dexuse — JSON output")
     d.text((64, 102), "Machine-readable JSON mode", fill=WHITE, font=F30)
-    d.text((64, 140), "npx dexuse --json    --granularity day    --from / --to", fill=MUTED, font=F15)
+    d.text((64, 140), "npx @yashau/dexuse --json    --granularity day    --from / --to", fill=MUTED, font=F15)
     rounded(d, (64, 188, 1216, 705), CARD, BORDER, 14, 1)
     sample = json.dumps({
         "records": DATA["records"],
