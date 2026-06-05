@@ -2,7 +2,7 @@
 
 # dexuse
 
-<img src="screenshots/dexuse-tui-timeline.png" alt="dexuse timeline view" width="920" />
+<img src="https://raw.githubusercontent.com/yashau/dexuse/main/screenshots/dexuse-tui-timeline.png" alt="dexuse timeline view" width="920" />
 
 **OpenAI / Codex token usage, finally visible.**
 
@@ -72,15 +72,15 @@ npx @yashau/dexuse --openclaw-home ~/.openclaw
 
 ### Drill into time
 
-<img src="screenshots/dexuse-tui-drilldown.png" alt="dexuse drilldown view" width="920" />
+<img src="https://raw.githubusercontent.com/yashau/dexuse/main/screenshots/dexuse-tui-drilldown.png" alt="dexuse drilldown view" width="920" />
 
 ### Compare models
 
-<img src="screenshots/dexuse-tui-models.png" alt="dexuse models view" width="920" />
+<img src="https://raw.githubusercontent.com/yashau/dexuse/main/screenshots/dexuse-tui-models.png" alt="dexuse models view" width="920" />
 
 ### See where the tokens came from
 
-<img src="screenshots/dexuse-tui-sources.png" alt="dexuse sources view" width="920" />
+<img src="https://raw.githubusercontent.com/yashau/dexuse/main/screenshots/dexuse-tui-sources.png" alt="dexuse sources view" width="920" />
 
 </div>
 

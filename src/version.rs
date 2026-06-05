@@ -1,6 +1,6 @@
 /// Human-facing release version. The project uses calendar-build versions:
 /// YYYY.M.D.n, where `n` is the release number for that day.
-pub const DISPLAY_VERSION: &str = "2026.6.5.3";
+pub const DISPLAY_VERSION: &str = "2026.6.5.4";
 
 /// Cargo and npm require SemVer, which cannot represent four numeric
 /// components. Package metadata encodes the daily build into the patch

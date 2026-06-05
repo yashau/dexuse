@@ -1,7 +1,15 @@
 {
   "name": "@yashau/dexuse",
-  "version": "2026.6.503",
+  "version": "2026.6.504",
   "description": "Fancy terminal usage explorer for Codex, Hermes, and OpenClaw token history",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yashau/dexuse.git"
+  },
+  "homepage": "https://github.com/yashau/dexuse#readme",
+  "bugs": {
+    "url": "https://github.com/yashau/dexuse/issues"
+  },
   "bin": {
     "dexuse": "scripts/dexuse.js"
   },
