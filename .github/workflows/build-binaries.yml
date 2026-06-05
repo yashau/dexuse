@@ -23,10 +23,10 @@ jobs:
             artifact: dexuse-win32-x64
             binary: dexuse-win32-x64.exe
             source: target/release/dexuse.exe
-          - name: macOS x64
+          - name: macOS arm64
             os: macos-latest
-            artifact: dexuse-darwin-x64
-            binary: dexuse-darwin-x64
+            artifact: dexuse-darwin-arm64
+            binary: dexuse-darwin-arm64
             source: target/release/dexuse
           - name: Linux x64
             os: ubuntu-latest
