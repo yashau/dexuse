@@ -4,40 +4,40 @@
 
 <img src="screenshots/dexuse-tui-timeline.png" alt="dexuse timeline view" width="920" />
 
-**Your local AI token burn, finally visible.**
+**OpenAI / Codex token usage, finally visible.**
 
-`dexuse` turns messy local usage history from Codex, Hermes, and OpenClaw into a polished terminal dashboard with timelines, model splits, source breakdowns, cache reads, reasoning tokens, and JSON export.
+`dexuse` turns local OpenAI/Codex-style usage history into a polished terminal dashboard with timelines, model splits, source breakdowns, cache reads, reasoning tokens, and JSON export.
 
-[![Rust](https://img.shields.io/badge/Rust-fast-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-fancy_af-8b5cf6?style=for-the-badge)](#screenshots) [![npx](https://img.shields.io/badge/run_with-npx-cb3837?style=for-the-badge&logo=npm)](#install)
+[![Rust](https://img.shields.io/badge/Rust-fast-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-fancy_af-8b5cf6?style=for-the-badge)](#screenshots) [![npx](https://img.shields.io/badge/one_liner-npx-cb3837?style=for-the-badge&logo=npm)](#one-liner)
 
 </div>
 
 ## Why it exists
 
-AI tools write usage logs all over your machine. `dexuse` pulls them together so you can answer the questions that actually matter:
+OpenAI/Codex tools leave token history scattered around your machine. `dexuse` pulls the useful parts into one beautiful local view so you can answer:
 
-- Which model ate the most tokens?
-- How much was cached versus fresh input?
-- Was it Codex, Hermes, or OpenClaw?
+- Which model burned the most tokens?
+- How much was cached instead of fresh input?
+- Did it come from Codex, Hermes, or OpenClaw?
 - What changed by day, week, month, or year?
-- Can I get the same view as JSON for scripts? Yep.
+- Can I get the same totals as JSON? Yep.
 
 No cloud account. No upload. It reads local files only.
 
-## Install
+## One-liner
 
 ```bash
 npx dexuse
 ```
 
-Or from a checkout:
+From a checkout:
 
 ```bash
 pnpm install
 cargo run --release --
 ```
 
-## The good stuff
+## Handy moves
 
 ```bash
 npx dexuse
@@ -57,9 +57,9 @@ npx dexuse --openclaw-only
 Need a custom path?
 
 ```bash
-npx dexuse --codex-home ./fixtures/usage/codex
-npx dexuse --hermes-home ./fixtures/usage/hermes
-npx dexuse --openclaw-home ./fixtures/usage/openclaw
+npx dexuse --codex-home ~/.codex
+npx dexuse --hermes-home ~/.hermes
+npx dexuse --openclaw-home ~/.openclaw
 ```
 
 ## Screenshots
@@ -104,9 +104,9 @@ npx dexuse --openclaw-home ./fixtures/usage/openclaw
 
 JSON output includes totals, time buckets, model splits, provider splits, and source splits.
 
-## Built for more agents
+## Built for more OpenAI/Codex sources
 
-Codex, Hermes, and OpenClaw are just harnesses. The ingestion layer is modular, so another local agent can be added without turning `main.rs` into spaghetti. Maintainer details live in [`AGENTS.md`](AGENTS.md).
+Codex, Hermes, and OpenClaw are harnesses over local OpenAI/Codex-style usage logs. The ingestion layer is modular, so another compatible local agent can be added without turning `main.rs` into spaghetti. Maintainer details live in [`AGENTS.md`](AGENTS.md).
 
 ## Ship it locally
 
