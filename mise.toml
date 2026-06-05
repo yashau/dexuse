@@ -1,0 +1,61 @@
+[tools]
+rust = "1.95.0"
+node = "24.15.0"
+
+[env]
+RUST_BACKTRACE = "1"
+
+[tasks.fmt]
+description = "Format Rust sources"
+run = "python scripts/with_timeout.py 60 -- cargo fmt"
+
+[tasks.test]
+description = "Run Rust unit/doc tests"
+run = "python scripts/with_timeout.py 180 -- cargo test"
+
+[tasks.clippy]
+description = "Run clippy with warnings denied"
+run = "python scripts/with_timeout.py 240 -- cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.miri-setup]
+description = "Install the nightly Miri component used by mise run miri"
+run = "python scripts/with_timeout.py 240 -- rustup +nightly component add miri"
+
+[tasks.miri]
+description = "Run unit tests under Miri on nightly"
+depends = ["miri-setup"]
+env = { MIRIFLAGS = "-Zmiri-disable-isolation" }
+run = "python scripts/with_timeout.py 300 -- cargo +nightly miri test --lib"
+
+[tasks.build]
+description = "Build optimized Rust binary"
+run = "python scripts/with_timeout.py 240 -- cargo build --release"
+
+[tasks.bundle]
+description = "Copy the current platform release binary into npm's bin/ layout"
+depends = ["build"]
+run = "python scripts/with_timeout.py 60 -- python scripts/bundle_current.py"
+
+[tasks.smoke-json]
+description = "Smoke-test the npm wrapper JSON mode against local usage data"
+depends = ["bundle"]
+run = "python scripts/with_timeout.py 180 -- python scripts/smoke_json.py"
+
+[tasks.screenshots]
+description = "Capture real Ratatui TUI screenshots via node-pty, xterm/headless, and Playwright"
+depends = ["bundle"]
+run = "python scripts/with_timeout.py 180 -- pnpm run screenshots"
+
+[tasks.pack]
+description = "Validate npm package contents"
+depends = ["bundle"]
+run = "python scripts/with_timeout.py 120 -- pnpm pack --dry-run"
+
+[tasks.check]
+description = "Full local quality gate: fmt, tests, clippy, miri, release build, JSON smoke, npm pack"
+depends = ["fmt", "test", "clippy", "miri", "bundle", "smoke-json", "pack"]
+
+[tasks.scaffold]
+description = "Bootstrap/verify the project scaffold via mise"
+depends = ["fmt", "test", "clippy"]
+run = "python scripts/with_timeout.py 30 -- python scripts/scaffold_ready.py"

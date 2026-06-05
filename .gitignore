@@ -1,0 +1,6 @@
+/target
+/node_modules
+/screenshot-data.json
+/.mise-smoke.json
+*.tgz
+screenshots/*.html
