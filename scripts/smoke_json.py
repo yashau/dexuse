@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,8 @@ FIXTURE_OPENCLAW_HOME = FIXTURE_ROOT / "openclaw"
 out = ROOT / ".mise-smoke.json"
 
 with out.open("w", encoding="utf-8", newline="\n") as handle:
+    env = os.environ.copy()
+    env["DEXUSE_DISABLE_CODEX_QUOTA"] = "1"
     subprocess.run(
         [
             "node",
@@ -30,6 +33,7 @@ with out.open("w", encoding="utf-8", newline="\n") as handle:
         ],
         check=True,
         cwd=ROOT,
+        env=env,
         stdout=handle,
     )
 

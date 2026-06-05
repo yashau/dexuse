@@ -259,6 +259,7 @@ mod tests {
     use std::fs;
 
     #[test]
+    #[cfg_attr(miri, ignore = "filesystem FFI is not supported by Miri on Windows")]
     fn reads_usage_from_openclaw_agent_transcripts() {
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("agents/main/sessions");
@@ -313,6 +314,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "filesystem FFI is not supported by Miri on Windows")]
     fn includes_reset_and_deleted_archives_but_skips_trajectory_checkpoints_and_bak() {
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("agents/worker/sessions");
@@ -348,6 +350,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "filesystem FFI is not supported by Miri on Windows")]
     fn normalizes_openai_style_cached_prompt_tokens_without_double_counting() {
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("agents/main/sessions");

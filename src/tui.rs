@@ -1,6 +1,7 @@
 use crate::{
     model::{DateFilter, Granularity, Summary, UsageRecord, aggregate},
     output::compact_tokens,
+    quota::{CodexQuota, fetch_codex_quota, format_quota_label},
 };
 use anyhow::Result;
 use crossterm::{
@@ -20,7 +21,12 @@ use ratatui::{
         Paragraph, Row, Table, Tabs,
     },
 };
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::Duration,
+};
 
 const BG: Color = Color::Rgb(5, 7, 13);
 const PANEL: Color = Color::Rgb(9, 13, 25);
@@ -62,6 +68,8 @@ struct App {
     granularity: Granularity,
     selected_bucket: usize,
     drill_stack: Vec<DrillState>,
+    quota: Option<CodexQuota>,
+    quota_rx: Option<Receiver<Option<CodexQuota>>>,
 }
 
 impl App {
@@ -75,11 +83,14 @@ impl App {
             granularity,
             selected_bucket: 0,
             drill_stack: Vec::new(),
+            quota: None,
+            quota_rx: spawn_quota_probe(),
         }
     }
 
     fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
+            self.poll_quota_probe();
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(160))?
                 && let Event::Key(key) = event::read()?
@@ -106,6 +117,22 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn poll_quota_probe(&mut self) {
+        let Some(rx) = &self.quota_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(quota) => {
+                self.quota = quota;
+                self.quota_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.quota_rx = None;
+            }
+        }
     }
 
     fn recompute(&mut self) {
@@ -218,6 +245,17 @@ impl App {
     }
 
     fn draw_header(&self, f: &mut ratatui::Frame, area: Rect) {
+        let header = if self.quota.is_some() && area.width >= 108 {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(45), Constraint::Length(62)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(100)])
+                .split(area)
+        };
         let tabs = Tabs::new(vec!["  Timeline  ", "  Models  ", "  Sources  "])
             .select(self.tab)
             .block(fancy_block(self.period_title()))
@@ -229,7 +267,26 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )
             .divider(Span::styled(" │ ", Style::default().fg(PINK)));
-        f.render_widget(tabs, area);
+        f.render_widget(tabs, header[0]);
+
+        if let Some(quota) = &self.quota
+            && header.len() > 1
+        {
+            let label = format!("{}   ", format_quota_label(quota));
+            let text = Line::from(vec![
+                Span::styled("◷ ", Style::default().fg(PINK)),
+                Span::styled(
+                    label,
+                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                ),
+            ]);
+            f.render_widget(
+                Paragraph::new(text)
+                    .alignment(ratatui::layout::Alignment::Right)
+                    .block(fancy_block(" Codex remaining ")),
+                header[1],
+            );
+        }
     }
 
     fn draw_summary(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -610,6 +667,18 @@ impl App {
             self.drill_stack.len()
         )
     }
+}
+
+fn spawn_quota_probe() -> Option<Receiver<Option<CodexQuota>>> {
+    if std::env::var_os("DEXUSE_DISABLE_CODEX_QUOTA").is_some() {
+        return None;
+    }
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fetch_codex_quota());
+    });
+    Some(rx)
 }
 
 fn fancy_block(title: impl Into<String>) -> Block<'static> {

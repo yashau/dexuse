@@ -6,6 +6,7 @@ pub mod model;
 pub mod openclaw;
 pub mod output;
 pub mod paths;
+pub mod quota;
 pub mod sources;
 pub mod tui;
 pub mod version;

@@ -176,7 +176,8 @@ async function capture(name, title, keys = []) {
       ...process.env,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
-      RUST_BACKTRACE: '1'
+      RUST_BACKTRACE: '1',
+      DEXUSE_DISABLE_CODEX_QUOTA: '1'
     }
   });
 

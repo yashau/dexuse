@@ -1,8 +1,22 @@
-use crate::model::Summary;
+use crate::{model::Summary, quota::CodexQuotaSnapshot};
 use anyhow::Result;
+use serde::Serialize;
 
-pub fn print_json(summary: &Summary) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(summary)?);
+#[derive(Serialize)]
+struct JsonOutput<'a> {
+    #[serde(flatten)]
+    summary: &'a Summary,
+    codex_quota: Option<CodexQuotaSnapshot>,
+}
+
+pub fn print_json(summary: &Summary, codex_quota: Option<CodexQuotaSnapshot>) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&JsonOutput {
+            summary,
+            codex_quota,
+        })?
+    );
     Ok(())
 }
 
