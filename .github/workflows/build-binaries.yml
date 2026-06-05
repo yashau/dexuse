@@ -24,7 +24,7 @@ jobs:
             binary: dexuse-win32-x64.exe
             source: target/release/dexuse.exe
           - name: macOS x64
-            os: macos-13
+            os: macos-latest
             artifact: dexuse-darwin-x64
             binary: dexuse-darwin-x64
             source: target/release/dexuse
