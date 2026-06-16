@@ -36,7 +36,7 @@ From a checkout:
 ```bash
 mise install
 mise run bundle
-pnpm exec dexuse
+pnpm run dexuse
 ```
 
 `mise` is the primary repo tool: it installs the pinned Rust/Node toolchains and owns the repeatable local tasks for formatting, tests, builds, screenshots, package checks, and release-binary bundling. Use the direct `cargo`/`pnpm` commands below only as lower-level fallbacks.
