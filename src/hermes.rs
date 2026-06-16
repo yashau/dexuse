@@ -134,4 +134,21 @@ mod tests {
                 .any(|r| r.provider == "openai" && r.usage.estimated_cost_usd == 0.42)
         );
     }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "SQLite/file FFI is not supported by Miri on Windows")]
+    fn includes_hermes_soft_archived_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("create table sessions(id text,title text,model text,started_at real,ended_at real,input_tokens integer,output_tokens integer,cache_read_tokens integer,cache_write_tokens integer,reasoning_tokens integer,api_call_count integer,billing_provider text,billing_base_url text,billing_mode text,estimated_cost_usd real,archived integer not null default 0);").unwrap();
+        conn.execute("insert into sessions values('active','active','gpt-5.5',1780513413.0,null,10,3,0,0,1,1,'openai-codex','https://chatgpt.com/backend-api/codex','subscription_included',0.0,0)", []).unwrap();
+        conn.execute("insert into sessions values('archived','archived','gpt-5.5',1780513414.0,null,20,4,0,0,2,1,'openai-codex','https://chatgpt.com/backend-api/codex','subscription_included',0.0,1)", []).unwrap();
+        drop(conn);
+
+        let records = collect_hermes(dir.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|r| r.session_id == "active"));
+        assert!(records.iter().any(|r| r.session_id == "archived"));
+    }
 }

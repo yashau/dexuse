@@ -1,11 +1,11 @@
 use crate::{
-    model::{DateFilter, Granularity, Summary, UsageRecord, aggregate},
+    model::{DateFilter, Granularity, Summary, Usage, UsageRecord, aggregate},
     output::compact_tokens,
     quota::{CodexQuota, fetch_codex_quota, format_quota_label},
 };
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -18,10 +18,11 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Chart, Dataset, GraphType,
-        Paragraph, Row, Table, Tabs,
+        LegendPosition, Paragraph, Row, Table, Tabs,
     },
 };
 use std::{
+    collections::BTreeSet,
     io,
     sync::mpsc::{self, Receiver},
     thread,
@@ -75,13 +76,14 @@ struct App {
 impl App {
     fn new(records: Vec<UsageRecord>, filter: DateFilter, granularity: Granularity) -> Self {
         let summary = aggregate(&records, &filter, granularity);
+        let selected_bucket = selected_bucket_for_now(&summary, chrono::Utc::now());
         Self {
             records,
             filter,
             summary,
             tab: 0,
             granularity,
-            selected_bucket: 0,
+            selected_bucket,
             drill_stack: Vec::new(),
             quota: None,
             quota_rx: spawn_quota_probe(),
@@ -94,29 +96,38 @@ impl App {
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(160))?
                 && let Event::Key(key) = event::read()?
+                && !self.handle_key(key)
             {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Tab => self.tab = (self.tab + 1).min(2),
-                    KeyCode::BackTab => self.tab = self.tab.saturating_sub(1),
-                    KeyCode::Char('[') => self.tab = self.tab.saturating_sub(1),
-                    KeyCode::Char(']') => self.tab = (self.tab + 1).min(2),
-                    KeyCode::Char('1') => self.tab = 0,
-                    KeyCode::Char('2') => self.tab = 1,
-                    KeyCode::Char('3') => self.tab = 2,
-                    KeyCode::Left | KeyCode::Char('h') => self.move_bucket(-1),
-                    KeyCode::Right | KeyCode::Char('l') => self.move_bucket(1),
-                    KeyCode::Enter | KeyCode::Char(' ') => self.drill_down(),
-                    KeyCode::Backspace | KeyCode::Char('u') => self.drill_up(),
-                    KeyCode::Char('y') => self.set_granularity(Granularity::Year),
-                    KeyCode::Char('m') => self.set_granularity(Granularity::Month),
-                    KeyCode::Char('w') => self.set_granularity(Granularity::Week),
-                    KeyCode::Char('d') => self.set_granularity(Granularity::Day),
-                    _ => {}
-                }
+                break;
             }
         }
         Ok(())
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if key.kind != KeyEventKind::Press {
+            return true;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return false,
+            KeyCode::Tab => self.tab = (self.tab + 1).min(2),
+            KeyCode::BackTab => self.tab = self.tab.saturating_sub(1),
+            KeyCode::Char('[') => self.tab = self.tab.saturating_sub(1),
+            KeyCode::Char(']') => self.tab = (self.tab + 1).min(2),
+            KeyCode::Char('1') => self.tab = 0,
+            KeyCode::Char('2') => self.tab = 1,
+            KeyCode::Char('3') => self.tab = 2,
+            KeyCode::Left | KeyCode::Char('h') => self.move_bucket(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.move_bucket(1),
+            KeyCode::Enter | KeyCode::Char(' ') => self.drill_down(),
+            KeyCode::Backspace | KeyCode::Char('u') => self.drill_up(),
+            KeyCode::Char('y') => self.set_granularity(Granularity::Year),
+            KeyCode::Char('m') => self.set_granularity(Granularity::Month),
+            KeyCode::Char('w') => self.set_granularity(Granularity::Week),
+            KeyCode::Char('d') => self.set_granularity(Granularity::Day),
+            _ => {}
+        }
+        true
     }
 
     fn poll_quota_probe(&mut self) {
@@ -161,14 +172,38 @@ impl App {
         };
     }
 
+    fn selected_model_usage(&self) -> &std::collections::BTreeMap<String, Usage> {
+        self.summary
+            .buckets
+            .get(self.selected_bucket)
+            .map(|bucket| &bucket.by_model)
+            .unwrap_or(&self.summary.by_model)
+    }
+
+    fn selected_source_usage(&self) -> &std::collections::BTreeMap<String, Usage> {
+        self.summary
+            .buckets
+            .get(self.selected_bucket)
+            .map(|bucket| &bucket.by_source)
+            .unwrap_or(&self.summary.by_source)
+    }
+
+    fn selected_usage(&self) -> &Usage {
+        self.summary
+            .buckets
+            .get(self.selected_bucket)
+            .map(|bucket| &bucket.usage)
+            .unwrap_or(&self.summary.total)
+    }
+
     fn set_granularity(&mut self, granularity: Granularity) {
         if self.granularity == granularity {
             return;
         }
         self.drill_stack.clear();
         self.granularity = granularity;
-        self.selected_bucket = 0;
         self.recompute();
+        self.select_default_bucket();
     }
 
     fn drill_down(&mut self) {
@@ -193,6 +228,7 @@ impl App {
         self.granularity = next;
         self.selected_bucket = 0;
         self.recompute();
+        self.select_default_bucket();
     }
 
     fn drill_up(&mut self) {
@@ -300,25 +336,14 @@ impl App {
                 Constraint::Percentage(20),
             ])
             .split(area);
-        let cached = self.summary.total.cached_input_tokens + self.summary.total.cache_write_tokens;
+        let usage = self.selected_usage();
+        let cached = usage.cached_input_tokens + usage.cache_write_tokens;
         let stats = [
-            (
-                "TOTAL",
-                compact_tokens(self.summary.total.total_tokens),
-                GREEN,
-            ),
-            (
-                "INPUT",
-                compact_tokens(self.summary.total.input_tokens),
-                CYAN,
-            ),
+            ("TOTAL", compact_tokens(usage.total_tokens), GREEN),
+            ("INPUT", compact_tokens(usage.input_tokens), CYAN),
             ("CACHED", compact_tokens(cached), PURPLE),
-            (
-                "OUTPUT",
-                compact_tokens(self.summary.total.output_tokens),
-                YELLOW,
-            ),
-            ("CALLS", self.summary.total.api_calls.to_string(), PINK),
+            ("OUTPUT", compact_tokens(usage.output_tokens), YELLOW),
+            ("CALLS", usage.api_calls.to_string(), PINK),
         ];
         for (i, (label, value, color)) in stats.into_iter().enumerate() {
             let text = vec![
@@ -344,17 +369,29 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
             .split(area);
-        self.draw_timeline_chart(f, chunks[0]);
-        self.draw_bucket_table(f, chunks[1]);
+        let (window_start, window_end) = self.timeline_bucket_window(chunks[1]);
+        self.draw_timeline_chart(f, chunks[0], window_start, window_end);
+        self.draw_bucket_table(f, chunks[1], window_start, window_end);
     }
 
-    fn draw_timeline_chart(&self, f: &mut ratatui::Frame, area: Rect) {
-        let models = self.summary.by_model.keys().cloned().collect::<Vec<_>>();
+    fn draw_timeline_chart(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        window_start: usize,
+        window_end: usize,
+    ) {
+        let buckets = &self.summary.buckets[window_start..window_end];
+        let models = buckets
+            .iter()
+            .flat_map(|bucket| bucket.by_model.keys().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let raw_series = models
             .iter()
             .map(|model| {
-                self.summary
-                    .buckets
+                buckets
                     .iter()
                     .enumerate()
                     .map(|(i, bucket)| {
@@ -390,33 +427,28 @@ impl App {
                     .data(&model_series[i])
             })
             .collect::<Vec<_>>();
-        let marker = [
-            (self.selected_bucket as f64, 0.0),
-            (self.selected_bucket as f64, 100.0),
-        ];
-        datasets.push(
-            Dataset::default()
-                .name("selection")
-                .marker(symbols::Marker::Dot)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::White))
-                .data(&marker),
-        );
-        let labels = self
-            .summary
-            .buckets
-            .iter()
-            .map(|b| Span::raw(b.key.clone()))
-            .collect::<Vec<_>>();
+        let selected_x = self.selected_bucket.saturating_sub(window_start) as f64;
+        let marker = [(selected_x, 0.0), (selected_x, 100.0)];
+        if !buckets.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(symbols::Marker::Dot)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::White))
+                    .data(&marker),
+            );
+        }
+        let labels = sampled_chart_labels(buckets.iter().map(|bucket| bucket.key.as_str()));
         let chart = Chart::new(datasets)
-            .block(fancy_block(" ◇ normalized token trend "))
+            .block(fancy_block(
+                " ◇ normalized token trend — legend: model color ",
+            ))
+            .legend_position(Some(LegendPosition::TopRight))
+            .hidden_legend_constraints((Constraint::Min(1), Constraint::Min(1)))
             .x_axis(
                 Axis::default()
-                    .bounds([
-                        0.0,
-                        self.summary.buckets.len().saturating_sub(1).max(1) as f64,
-                    ])
-                    .labels(labels.into_iter().take(7).collect::<Vec<_>>())
+                    .bounds([0.0, buckets.len().saturating_sub(1).max(1) as f64])
+                    .labels(labels)
                     .style(Style::default().fg(MUTED)),
             )
             .y_axis(
@@ -428,37 +460,51 @@ impl App {
         f.render_widget(chart, area);
     }
 
-    fn draw_bucket_table(&self, f: &mut ratatui::Frame, area: Rect) {
-        let rows = self.summary.buckets.iter().enumerate().map(|(i, bucket)| {
-            let top_model = bucket
-                .by_model
-                .iter()
-                .max_by_key(|(_, usage)| usage.total_tokens)
-                .map(|(model, usage)| format!("{}  {}", model, compact_tokens(usage.total_tokens)))
-                .unwrap_or_else(|| "-".to_string());
-            let mut row = Row::new(vec![
+    fn draw_bucket_table(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        window_start: usize,
+        window_end: usize,
+    ) {
+        let rows = self.summary.buckets[window_start..window_end]
+            .iter()
+            .enumerate()
+            .map(|(offset, bucket)| {
+                let i = window_start + offset;
+                let top_model = bucket
+                    .by_model
+                    .iter()
+                    .max_by_key(|(_, usage)| usage.total_tokens)
+                    .map(|(model, usage)| {
+                        format!("{}  {}", model, compact_tokens(usage.total_tokens))
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                let mut row = Row::new(vec![
+                    if i == self.selected_bucket {
+                        format!("▶ {}", bucket.key)
+                    } else {
+                        format!("  {}", bucket.key)
+                    },
+                    compact_tokens(bucket.usage.total_tokens),
+                    compact_tokens(bucket.usage.input_tokens),
+                    compact_tokens(
+                        bucket.usage.cached_input_tokens + bucket.usage.cache_write_tokens,
+                    ),
+                    compact_tokens(bucket.usage.output_tokens),
+                    bucket.usage.api_calls.to_string(),
+                    top_model,
+                ]);
                 if i == self.selected_bucket {
-                    format!("▶ {}", bucket.key)
-                } else {
-                    format!("  {}", bucket.key)
-                },
-                compact_tokens(bucket.usage.total_tokens),
-                compact_tokens(bucket.usage.input_tokens),
-                compact_tokens(bucket.usage.cached_input_tokens + bucket.usage.cache_write_tokens),
-                compact_tokens(bucket.usage.output_tokens),
-                bucket.usage.api_calls.to_string(),
-                top_model,
-            ]);
-            if i == self.selected_bucket {
-                row = row.style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(CYAN)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-            row
-        });
+                    row = row.style(
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(CYAN)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+                row
+            });
         let table = Table::new(
             rows,
             [
@@ -480,10 +526,46 @@ impl App {
             "calls",
             "top model",
         ]))
-        .block(fancy_block(
-            " tabular data — enter drills down, u drills up ",
-        ));
+        .block(fancy_block(self.bucket_table_title()));
         f.render_widget(table, area);
+    }
+
+    fn select_default_bucket(&mut self) {
+        self.selected_bucket = selected_bucket_for_now(&self.summary, chrono::Utc::now());
+    }
+
+    fn timeline_bucket_window(&self, table_area: Rect) -> (usize, usize) {
+        let len = self.summary.buckets.len();
+        if len == 0 {
+            return (0, 0);
+        }
+        let max_rows = usize::from(table_area.height.saturating_sub(4)).max(1);
+        if max_rows >= len {
+            return (0, len);
+        }
+        let selected = self.selected_bucket.min(len - 1);
+        let mut start = selected.saturating_sub(max_rows / 2);
+        if start + max_rows > len {
+            start = len - max_rows;
+        }
+        (start, start + max_rows)
+    }
+
+    fn bucket_table_title(&self) -> String {
+        let mut title = " tabular data".to_string();
+        let mut hints = Vec::new();
+        if self.granularity != Granularity::Day {
+            hints.push("enter drills down");
+        }
+        if !self.drill_stack.is_empty() {
+            hints.push("u drills up");
+        }
+        if !hints.is_empty() {
+            title.push_str(" — ");
+            title.push_str(&hints.join(", "));
+        }
+        title.push(' ');
+        title
     }
 
     fn draw_models(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -491,16 +573,13 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
             .split(area);
-        let max_tokens = self
-            .summary
-            .by_model
+        let model_usage = self.selected_model_usage();
+        let max_tokens = model_usage
             .values()
             .map(|usage| usage.total_tokens)
             .max()
             .unwrap_or(1);
-        let bars: Vec<Bar> = self
-            .summary
-            .by_model
+        let bars: Vec<Bar> = model_usage
             .iter()
             .enumerate()
             .map(|(i, (model, usage))| {
@@ -528,7 +607,7 @@ impl App {
             );
         f.render_widget(chart, chunks[0]);
 
-        let rows = self.summary.by_model.iter().map(|(model, usage)| {
+        let rows = model_usage.iter().map(|(model, usage)| {
             Row::new(vec![
                 model.clone(),
                 compact_tokens(usage.total_tokens),
@@ -554,7 +633,10 @@ impl App {
         .header(table_header(vec![
             "model", "total", "input", "cached", "output", "reason", "calls",
         ]))
-        .block(fancy_block(" model table "));
+        .block(fancy_block(format!(
+            " model table — {} ",
+            self.selected_period_label()
+        )));
         f.render_widget(table, chunks[1]);
     }
 
@@ -563,16 +645,13 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
             .split(area);
-        let max_tokens = self
-            .summary
-            .by_source
+        let source_usage = self.selected_source_usage();
+        let max_tokens = source_usage
             .values()
             .map(|usage| usage.total_tokens)
             .max()
             .unwrap_or(1);
-        let bars: Vec<Bar> = self
-            .summary
-            .by_source
+        let bars: Vec<Bar> = source_usage
             .iter()
             .enumerate()
             .map(|(i, (source, usage))| {
@@ -595,7 +674,7 @@ impl App {
             );
         f.render_widget(chart, chunks[0]);
 
-        let rows = self.summary.by_source.iter().map(|(source, usage)| {
+        let rows = source_usage.iter().map(|(source, usage)| {
             Row::new(vec![
                 source.clone(),
                 compact_tokens(usage.total_tokens),
@@ -619,36 +698,61 @@ impl App {
         .header(table_header(vec![
             "source", "total", "input", "cached", "output", "calls",
         ]))
-        .block(fancy_block(" source table "));
+        .block(fancy_block(format!(
+            " source table — {} ",
+            self.selected_period_label()
+        )));
         f.render_widget(table, chunks[1]);
     }
 
     fn draw_footer(&self, f: &mut ratatui::Frame, area: Rect) {
-        let text = Line::from(vec![
-            Span::styled(
-                " ←/→ ",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("period  ", Style::default().fg(MUTED)),
-            Span::styled(
-                "Enter",
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" drill  ", Style::default().fg(MUTED)),
-            Span::styled("u", Style::default().fg(PINK).add_modifier(Modifier::BOLD)),
-            Span::styled(" up  ", Style::default().fg(MUTED)),
-            Span::styled(
-                "1/2/3",
-                Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" tabs  ", Style::default().fg(MUTED)),
-            Span::styled(
-                "y/m/w/d",
-                Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" period  q quit", Style::default().fg(MUTED)),
-        ]);
+        let text = Line::from(self.footer_hint_spans());
         f.render_widget(Paragraph::new(text).style(Style::default().bg(BG)), area);
+    }
+
+    #[cfg(test)]
+    fn footer_hint_text(&self) -> String {
+        self.footer_hint_spans()
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn footer_hint_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        self.push_footer_hint(&mut spans, "←/→", "period", CYAN);
+        if self.granularity != Granularity::Day {
+            self.push_footer_hint(&mut spans, "Enter", "drill", GREEN);
+        }
+        if !self.drill_stack.is_empty() {
+            self.push_footer_hint(&mut spans, "u", "up", PINK);
+        }
+        self.push_footer_hint(&mut spans, "1/2/3", "tabs", YELLOW);
+        self.push_footer_hint(&mut spans, "y/m/w/d", "period", PURPLE);
+        spans.push(Span::styled(
+            " q ",
+            Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("quit", Style::default().fg(MUTED)));
+        spans
+    }
+
+    fn push_footer_hint(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        key: &'static str,
+        label: &'static str,
+        color: Color,
+    ) {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("{label}  "),
+            Style::default().fg(MUTED),
+        ));
     }
 
     fn period_title(&self) -> String {
@@ -667,13 +771,20 @@ impl App {
             self.drill_stack.len()
         )
     }
+
+    fn selected_period_label(&self) -> String {
+        self.summary
+            .buckets
+            .get(self.selected_bucket)
+            .map(|bucket| bucket.key.clone())
+            .unwrap_or_else(|| "all usage".to_string())
+    }
 }
 
 fn spawn_quota_probe() -> Option<Receiver<Option<CodexQuota>>> {
     if std::env::var_os("DEXUSE_DISABLE_CODEX_QUOTA").is_some() {
         return None;
     }
-
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(fetch_codex_quota());
@@ -698,4 +809,287 @@ fn table_header(labels: Vec<&'static str>) -> Row<'static> {
 
 fn color(i: usize) -> Color {
     [CYAN, PINK, GREEN, YELLOW, PURPLE, Color::Rgb(92, 144, 255)][i % 6]
+}
+
+fn selected_bucket_for_now(summary: &Summary, now: chrono::DateTime<chrono::Utc>) -> usize {
+    if summary.buckets.is_empty() {
+        return 0;
+    }
+    summary
+        .buckets
+        .iter()
+        .position(|bucket| bucket.start <= now && now < bucket.end)
+        .or_else(|| {
+            summary
+                .buckets
+                .iter()
+                .rposition(|bucket| bucket.start <= now)
+        })
+        .unwrap_or(0)
+}
+
+fn sampled_chart_labels<'a>(keys: impl ExactSizeIterator<Item = &'a str>) -> Vec<Span<'static>> {
+    const MAX_LABELS: usize = 7;
+
+    let keys = keys.collect::<Vec<_>>();
+    let len = keys.len();
+    if len == 0 {
+        return Vec::new();
+    }
+    if len <= MAX_LABELS {
+        return keys
+            .into_iter()
+            .map(|key| Span::raw(key.to_string()))
+            .collect();
+    }
+
+    let last = len - 1;
+    (0..MAX_LABELS)
+        .map(|i| (i * last) / (MAX_LABELS - 1))
+        .scan(None, |previous, index| {
+            if *previous == Some(index) {
+                None
+            } else {
+                *previous = Some(index);
+                Some(Span::raw(keys[index].to_string()))
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Source, Usage};
+    use chrono::TimeZone;
+
+    fn usage_record(day: u32, model: &str, source: Source, tokens: u64) -> UsageRecord {
+        let mut usage = Usage {
+            input_tokens: tokens,
+            ..Usage::default()
+        };
+        usage.recompute_total();
+        UsageRecord {
+            timestamp: chrono::Utc
+                .with_ymd_and_hms(2026, 6, day, 12, 0, 0)
+                .unwrap(),
+            source,
+            provider: "openai-codex".to_string(),
+            model: model.to_string(),
+            session_id: format!("session-{day}-{model}"),
+            title: None,
+            usage,
+        }
+    }
+
+    fn record(day: u32) -> UsageRecord {
+        usage_record(day, "gpt-5.5", Source::Codex, 10)
+    }
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, crossterm::event::KeyModifiers::NONE, kind)
+    }
+
+    fn app_with_days(days: &[u32]) -> App {
+        let records: Vec<_> = days.iter().copied().map(record).collect();
+        app_with_records(records, Granularity::Day)
+    }
+
+    fn app_with_records(records: Vec<UsageRecord>, granularity: Granularity) -> App {
+        let filter = DateFilter::default();
+        let summary = aggregate(&records, &filter, granularity);
+        App {
+            records,
+            filter,
+            summary,
+            tab: 0,
+            granularity,
+            selected_bucket: 0,
+            drill_stack: Vec::new(),
+            quota: None,
+            quota_rx: None,
+        }
+    }
+
+    #[test]
+    fn arrow_release_does_not_advance_period_twice() {
+        let mut app = app_with_days(&[1, 2, 3]);
+
+        app.handle_key(key(KeyCode::Right, KeyEventKind::Press));
+        app.handle_key(key(KeyCode::Right, KeyEventKind::Release));
+
+        assert_eq!(app.selected_bucket, 1);
+    }
+
+    #[test]
+    fn default_period_selection_prefers_today_then_nearest_prior_bucket() {
+        let filter = DateFilter::default();
+        let summary = aggregate(
+            &[record(1), record(16), record(17)],
+            &filter,
+            Granularity::Day,
+        );
+        let today = chrono::Utc.with_ymd_and_hms(2026, 6, 16, 18, 0, 0).unwrap();
+        assert_eq!(selected_bucket_for_now(&summary, today), 1);
+
+        let older_summary = aggregate(&[record(1), record(2)], &filter, Granularity::Day);
+        assert_eq!(selected_bucket_for_now(&older_summary, today), 1);
+
+        let future_summary = aggregate(&[record(20)], &filter, Granularity::Day);
+        assert_eq!(selected_bucket_for_now(&future_summary, today), 0);
+    }
+
+    #[test]
+    fn timeline_bucket_window_scrolls_with_selected_period_when_rows_overflow() {
+        let mut app = app_with_days(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let short_table = Rect::new(0, 0, 80, 7);
+
+        app.selected_bucket = 1;
+        assert_eq!(app.timeline_bucket_window(short_table), (0, 3));
+
+        app.selected_bucket = 5;
+        assert_eq!(app.timeline_bucket_window(short_table), (4, 7));
+
+        app.selected_bucket = 8;
+        assert_eq!(app.timeline_bucket_window(short_table), (7, 10));
+    }
+
+    #[test]
+    fn sampled_chart_labels_cover_the_same_window_start_and_end_as_the_table() {
+        let keys = (1..=10)
+            .map(|day| format!("2026-06-{day:02}"))
+            .collect::<Vec<_>>();
+        let labels = sampled_chart_labels(keys.iter().map(String::as_str))
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels.first().map(String::as_str), Some("2026-06-01"));
+        assert_eq!(labels.last().map(String::as_str), Some("2026-06-10"));
+        assert_eq!(labels.len(), 7);
+    }
+
+    #[test]
+    fn model_tab_breakdown_follows_selected_period_and_granularity_keys() {
+        let mut app = app_with_records(
+            vec![
+                usage_record(1, "gpt-5.5", Source::Codex, 10),
+                usage_record(2, "gpt-5.4", Source::Codex, 20),
+                usage_record(3, "gpt-5.4-mini", Source::Codex, 30),
+            ],
+            Granularity::Day,
+        );
+        app.tab = 1;
+
+        assert_eq!(app.selected_model_usage()["gpt-5.5"].total_tokens, 10);
+        assert!(!app.selected_model_usage().contains_key("gpt-5.4"));
+
+        app.handle_key(key(KeyCode::Right, KeyEventKind::Press));
+        assert_eq!(app.selected_period_label(), "2026-06-02");
+        assert_eq!(app.selected_model_usage()["gpt-5.4"].total_tokens, 20);
+        assert!(!app.selected_model_usage().contains_key("gpt-5.5"));
+
+        app.handle_key(key(KeyCode::Char('m'), KeyEventKind::Press));
+        assert_eq!(app.granularity, Granularity::Month);
+        assert_eq!(app.selected_period_label(), "2026-06");
+        assert_eq!(app.selected_model_usage()["gpt-5.5"].total_tokens, 10);
+        assert_eq!(app.selected_model_usage()["gpt-5.4"].total_tokens, 20);
+        assert_eq!(app.selected_model_usage()["gpt-5.4-mini"].total_tokens, 30);
+    }
+
+    #[test]
+    fn source_tab_breakdown_follows_selected_period_and_granularity_keys() {
+        let mut app = app_with_records(
+            vec![
+                usage_record(1, "gpt-5.5", Source::Codex, 10),
+                usage_record(2, "gpt-5.5", Source::Hermes, 20),
+                usage_record(3, "gpt-5.5", Source::OpenClaw, 30),
+            ],
+            Granularity::Day,
+        );
+        app.tab = 2;
+
+        assert_eq!(app.selected_source_usage()["codex"].total_tokens, 10);
+        assert!(!app.selected_source_usage().contains_key("hermes"));
+
+        app.handle_key(key(KeyCode::Right, KeyEventKind::Press));
+        assert_eq!(app.selected_period_label(), "2026-06-02");
+        assert_eq!(app.selected_source_usage()["hermes"].total_tokens, 20);
+        assert!(!app.selected_source_usage().contains_key("codex"));
+
+        app.handle_key(key(KeyCode::Char('m'), KeyEventKind::Press));
+        assert_eq!(app.granularity, Granularity::Month);
+        assert_eq!(app.selected_period_label(), "2026-06");
+        assert_eq!(app.selected_source_usage()["codex"].total_tokens, 10);
+        assert_eq!(app.selected_source_usage()["hermes"].total_tokens, 20);
+        assert_eq!(app.selected_source_usage()["openclaw"].total_tokens, 30);
+    }
+
+    #[test]
+    fn summary_cards_follow_selected_period_usage() {
+        let mut app = app_with_records(
+            vec![
+                usage_record(1, "gpt-5.5", Source::Codex, 10),
+                usage_record(2, "gpt-5.5", Source::Codex, 20),
+                usage_record(3, "gpt-5.5", Source::Codex, 30),
+            ],
+            Granularity::Day,
+        );
+
+        assert_eq!(app.summary.total.total_tokens, 60);
+        assert_eq!(app.selected_usage().total_tokens, 10);
+
+        app.handle_key(key(KeyCode::Right, KeyEventKind::Press));
+        assert_eq!(app.selected_period_label(), "2026-06-02");
+        assert_eq!(app.selected_usage().total_tokens, 20);
+
+        app.handle_key(key(KeyCode::Char('m'), KeyEventKind::Press));
+        assert_eq!(app.selected_period_label(), "2026-06");
+        assert_eq!(app.selected_usage().total_tokens, 60);
+    }
+
+    #[test]
+    fn footer_hides_drill_and_up_keys_when_they_cannot_change_state() {
+        let mut app = app_with_days(&[1, 2, 3]);
+        app.granularity = Granularity::Day;
+        app.recompute();
+
+        let footer = app.footer_hint_text();
+
+        assert!(!footer.contains("Enter"));
+        assert!(!footer.contains(" u "));
+        assert!(footer.contains("←/→"));
+        assert!(footer.contains("y/m/w/d"));
+    }
+
+    #[test]
+    fn footer_shows_drill_and_up_only_when_available_on_each_tab() {
+        let mut app = app_with_records(vec![record(1), record(2)], Granularity::Week);
+        app.tab = 1;
+        assert!(app.footer_hint_text().contains("Enter"));
+        assert!(!app.footer_hint_text().contains(" u "));
+
+        app.drill_down();
+        app.tab = 2;
+        let footer = app.footer_hint_text();
+        assert!(!footer.contains("Enter"));
+        assert!(footer.contains(" u "));
+        assert!(footer.contains("1/2/3"));
+        assert!(footer.contains("y/m/w/d"));
+    }
+
+    #[test]
+    fn bucket_table_title_hides_inactive_drill_keys() {
+        let mut app = app_with_days(&[1, 2, 3]);
+        assert!(!app.bucket_table_title().contains("enter"));
+        assert!(!app.bucket_table_title().contains("u drills"));
+
+        app = app_with_records(vec![record(1), record(2)], Granularity::Week);
+        assert!(app.bucket_table_title().contains("enter drills down"));
+        assert!(!app.bucket_table_title().contains("u drills up"));
+
+        app.drill_down();
+        assert!(!app.bucket_table_title().contains("enter drills down"));
+        assert!(app.bucket_table_title().contains("u drills up"));
+    }
 }

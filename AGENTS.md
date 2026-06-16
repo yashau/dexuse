@@ -253,6 +253,7 @@ Follow this shape:
 - Module: `src/hermes.rs`
 - Homes include `%LOCALAPPDATA%/hermes` on Windows and `~/.hermes`.
 - Reads `state.db` plus profile `state.db` files.
+- Includes Hermes soft-archived sessions. Hermes Desktop stores these as `sessions.archived = 1` rows in `state.db`; they are hidden from default session lists but keep their token totals and messages.
 - Includes OpenAI-backed rows where `billing_provider` is `openai-codex`, `openai`, or `openai:*`.
 
 ### OpenClaw

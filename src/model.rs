@@ -202,9 +202,8 @@ pub fn bucket_for(
             let weekday = ts.weekday().num_days_from_monday() as i64;
             let date = ts.date_naive() - Duration::days(weekday);
             let start = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
-            let iso = ts.iso_week();
             (
-                format!("{:04}-W{:02}", iso.year(), iso.week()),
+                start.format("%Y-%m-%d").to_string(),
                 start,
                 start + Duration::days(7),
             )
@@ -219,5 +218,21 @@ pub fn bucket_for(
                 start + Duration::days(1),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn week_bucket_key_is_the_week_start_date() {
+        let ts = Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap();
+
+        let (key, start, end) = bucket_for(ts, Granularity::Week);
+
+        assert_eq!(key, "2026-06-15");
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 6, 15, 0, 0, 0).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2026, 6, 22, 0, 0, 0).unwrap());
     }
 }
