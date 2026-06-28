@@ -1,9 +1,13 @@
 use crate::{
     model::{DateFilter, Granularity, Summary, Usage, UsageRecord, aggregate},
     output::compact_tokens,
-    quota::{CodexQuota, fetch_codex_quota, format_quota_label},
+    quota::{
+        CodexQuota, CodexResetCredits, fetch_codex_quota, fetch_codex_reset_credits,
+        format_quota_label, format_reset_credit_chart_label,
+    },
 };
 use anyhow::Result;
+use chrono::TimeZone;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
@@ -24,6 +28,7 @@ use ratatui::{
 use std::{
     collections::BTreeSet,
     io,
+    path::PathBuf,
     sync::mpsc::{self, Receiver},
     thread,
     time::Duration,
@@ -41,13 +46,18 @@ const GREEN: Color = Color::Rgb(102, 255, 139);
 const YELLOW: Color = Color::Rgb(255, 213, 74);
 const PURPLE: Color = Color::Rgb(174, 129, 255);
 
-pub fn run(records: Vec<UsageRecord>, filter: DateFilter, granularity: Granularity) -> Result<()> {
+pub fn run(
+    records: Vec<UsageRecord>,
+    filter: DateFilter,
+    granularity: Granularity,
+    codex_home: Option<PathBuf>,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = App::new(records, filter, granularity).run(&mut terminal);
+    let result = App::new(records, filter, granularity, codex_home).run(&mut terminal);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -71,10 +81,17 @@ struct App {
     drill_stack: Vec<DrillState>,
     quota: Option<CodexQuota>,
     quota_rx: Option<Receiver<Option<CodexQuota>>>,
+    reset_credits: Option<CodexResetCredits>,
+    reset_credits_rx: Option<Receiver<Option<CodexResetCredits>>>,
 }
 
 impl App {
-    fn new(records: Vec<UsageRecord>, filter: DateFilter, granularity: Granularity) -> Self {
+    fn new(
+        records: Vec<UsageRecord>,
+        filter: DateFilter,
+        granularity: Granularity,
+        codex_home: Option<PathBuf>,
+    ) -> Self {
         let summary = aggregate(&records, &filter, granularity);
         let selected_bucket = selected_bucket_for_now(&summary, chrono::Utc::now());
         Self {
@@ -87,12 +104,15 @@ impl App {
             drill_stack: Vec::new(),
             quota: None,
             quota_rx: spawn_quota_probe(),
+            reset_credits: None,
+            reset_credits_rx: spawn_reset_credits_probe(codex_home),
         }
     }
 
     fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
             self.poll_quota_probe();
+            self.poll_reset_credits_probe();
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(160))?
                 && let Event::Key(key) = event::read()?
@@ -142,6 +162,22 @@ impl App {
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.quota_rx = None;
+            }
+        }
+    }
+
+    fn poll_reset_credits_probe(&mut self) {
+        let Some(rx) = &self.reset_credits_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(reset_credits) => {
+                self.reset_credits = reset_credits;
+                self.reset_credits_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.reset_credits_rx = None;
             }
         }
     }
@@ -439,10 +475,19 @@ impl App {
             );
         }
         let labels = sampled_chart_labels(buckets.iter().map(|bucket| bucket.key.as_str()));
+        let reset_markers = self.reset_credit_marker_series(buckets, window_start);
+        for (i, marker) in reset_markers.iter().enumerate() {
+            datasets.push(
+                Dataset::default()
+                    .marker(symbols::Marker::Dot)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(reset_marker_color(i)))
+                    .data(marker),
+            );
+        }
+
         let chart = Chart::new(datasets)
-            .block(fancy_block(
-                " ◇ normalized token trend — legend: model color ",
-            ))
+            .block(fancy_block(self.timeline_chart_title()))
             .legend_position(Some(LegendPosition::TopRight))
             .hidden_legend_constraints((Constraint::Min(1), Constraint::Min(1)))
             .x_axis(
@@ -458,6 +503,59 @@ impl App {
                     .style(Style::default().fg(MUTED)),
             );
         f.render_widget(chart, area);
+    }
+
+    fn reset_credit_marker_series(
+        &self,
+        buckets: &[crate::model::Bucket],
+        window_start: usize,
+    ) -> Vec<Vec<(f64, f64)>> {
+        let Some(reset_credits) = &self.reset_credits else {
+            return Vec::new();
+        };
+        reset_credits
+            .credits
+            .iter()
+            .filter_map(|credit| {
+                let expires_at = chrono::Utc.timestamp_opt(credit.expires_at, 0).single()?;
+                let (offset, bucket) = buckets
+                    .iter()
+                    .enumerate()
+                    .find(|(_, bucket)| bucket.start <= expires_at && expires_at < bucket.end)?;
+                let span = (bucket.end - bucket.start).num_seconds().max(1) as f64;
+                let elapsed = (expires_at - bucket.start)
+                    .num_seconds()
+                    .clamp(0, span as i64) as f64;
+                let x = offset as f64 + (elapsed / span);
+                let min_x = 0.0;
+                let max_x = buckets.len().saturating_sub(1).max(1) as f64;
+                let x = x.clamp(min_x, max_x);
+                let bucket_index = window_start + offset;
+                Some(vec![
+                    (x, 0.0),
+                    (
+                        x,
+                        if bucket_index == self.selected_bucket {
+                            100.0
+                        } else {
+                            96.0
+                        },
+                    ),
+                ])
+            })
+            .collect()
+    }
+
+    fn timeline_chart_title(&self) -> String {
+        let mut title = " ◇ normalized token trend — legend: model color ".to_string();
+        if let Some(reset_credits) = &self.reset_credits
+            && reset_credits.available_count > 0
+        {
+            title.push_str("— resets ");
+            title.push_str(&format_reset_credit_chart_label(reset_credits, 3));
+            title.push(' ');
+        }
+        title
     }
 
     fn draw_bucket_table(
@@ -792,6 +890,21 @@ fn spawn_quota_probe() -> Option<Receiver<Option<CodexQuota>>> {
     Some(rx)
 }
 
+fn spawn_reset_credits_probe(
+    codex_home: Option<PathBuf>,
+) -> Option<Receiver<Option<CodexResetCredits>>> {
+    if std::env::var_os("DEXUSE_DISABLE_CODEX_QUOTA").is_some()
+        || std::env::var_os("DEXUSE_DISABLE_CODEX_RESET_CREDITS").is_some()
+    {
+        return None;
+    }
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fetch_codex_reset_credits(codex_home.as_deref()));
+    });
+    Some(rx)
+}
+
 fn fancy_block(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .title(title.into())
@@ -809,6 +922,10 @@ fn table_header(labels: Vec<&'static str>) -> Row<'static> {
 
 fn color(i: usize) -> Color {
     [CYAN, PINK, GREEN, YELLOW, PURPLE, Color::Rgb(92, 144, 255)][i % 6]
+}
+
+fn reset_marker_color(i: usize) -> Color {
+    [Color::White, PINK, YELLOW, PURPLE, CYAN, GREEN][i % 6]
 }
 
 fn selected_bucket_for_now(summary: &Summary, now: chrono::DateTime<chrono::Utc>) -> usize {
@@ -861,6 +978,7 @@ fn sampled_chart_labels<'a>(keys: impl ExactSizeIterator<Item = &'a str>) -> Vec
 mod tests {
     use super::*;
     use crate::model::{Source, Usage};
+    use crate::quota::CodexResetCredit;
     use chrono::TimeZone;
 
     fn usage_record(day: u32, model: &str, source: Source, tokens: u64) -> UsageRecord {
@@ -908,6 +1026,8 @@ mod tests {
             drill_stack: Vec::new(),
             quota: None,
             quota_rx: None,
+            reset_credits: None,
+            reset_credits_rx: None,
         }
     }
 
@@ -952,6 +1072,38 @@ mod tests {
 
         app.selected_bucket = 8;
         assert_eq!(app.timeline_bucket_window(short_table), (7, 10));
+    }
+
+    #[test]
+    fn timeline_reset_credits_render_as_multiple_marker_lines() {
+        let mut app = app_with_days(&[1, 2, 3]);
+        app.reset_credits = Some(CodexResetCredits {
+            available_count: 2,
+            credits: vec![
+                CodexResetCredit {
+                    expires_at: chrono::Utc
+                        .with_ymd_and_hms(2026, 6, 1, 12, 0, 0)
+                        .unwrap()
+                        .timestamp(),
+                    label: "Jun 1 noon".to_string(),
+                },
+                CodexResetCredit {
+                    expires_at: chrono::Utc
+                        .with_ymd_and_hms(2026, 6, 2, 18, 0, 0)
+                        .unwrap()
+                        .timestamp(),
+                    label: "Jun 2 evening".to_string(),
+                },
+            ],
+            label: "Jun 1 noon • Jun 2 evening".to_string(),
+        });
+
+        let markers = app.reset_credit_marker_series(&app.summary.buckets, 0);
+
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0], vec![(0.5, 0.0), (0.5, 100.0)]);
+        assert_eq!(markers[1], vec![(1.75, 0.0), (1.75, 96.0)]);
+        assert!(app.timeline_chart_title().contains("resets Jun 1 noon"));
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use crate::{model::Summary, quota::CodexQuotaSnapshot};
+use crate::{
+    model::Summary,
+    quota::{CodexQuotaSnapshot, CodexResetCredits},
+};
 use anyhow::Result;
 use serde::Serialize;
 
@@ -7,14 +10,20 @@ struct JsonOutput<'a> {
     #[serde(flatten)]
     summary: &'a Summary,
     codex_quota: Option<CodexQuotaSnapshot>,
+    codex_reset_credits: Option<CodexResetCredits>,
 }
 
-pub fn print_json(summary: &Summary, codex_quota: Option<CodexQuotaSnapshot>) -> Result<()> {
+pub fn print_json(
+    summary: &Summary,
+    codex_quota: Option<CodexQuotaSnapshot>,
+    codex_reset_credits: Option<CodexResetCredits>,
+) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&JsonOutput {
             summary,
             codex_quota,
+            codex_reset_credits,
         })?
     );
     Ok(())

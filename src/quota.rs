@@ -1,11 +1,11 @@
-use chrono::{Local, TimeZone};
+use chrono::{DateTime, Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     ffi::OsString,
     fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
     thread,
@@ -24,6 +24,19 @@ pub struct CodexQuota {
 pub struct CodexQuotaSnapshot {
     #[serde(flatten)]
     pub quota: CodexQuota,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexResetCredit {
+    pub expires_at: i64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexResetCredits {
+    pub available_count: usize,
+    pub credits: Vec<CodexResetCredit>,
     pub label: String,
 }
 
@@ -65,9 +78,30 @@ pub fn fetch_codex_quota() -> Option<CodexQuota> {
     query_openclaw_quota()
 }
 
+pub fn fetch_codex_reset_credits(codex_home: Option<&Path>) -> Option<CodexResetCredits> {
+    if let Some(credits) = injected_codex_reset_credits() {
+        return Some(credits);
+    }
+    if std::env::var_os("DEXUSE_DISABLE_CODEX_QUOTA").is_some()
+        || std::env::var_os("DEXUSE_DISABLE_CODEX_RESET_CREDITS").is_some()
+    {
+        return None;
+    }
+    query_codex_reset_credits(codex_home)
+        .or_else(query_hermes_reset_credits)
+        .or_else(query_openclaw_reset_credits)
+}
+
 fn injected_codex_quota() -> Option<CodexQuota> {
     let raw = std::env::var("DEXUSE_CODEX_QUOTA_JSON").ok()?;
     serde_json::from_str::<CodexQuota>(&raw).ok()
+}
+
+fn injected_codex_reset_credits() -> Option<CodexResetCredits> {
+    let raw = std::env::var("DEXUSE_CODEX_RESET_CREDITS_JSON").ok()?;
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| parse_reset_credits_payload(&value))
 }
 
 pub fn parse_quota_messages(messages: &[Value]) -> Option<CodexQuota> {
@@ -100,12 +134,238 @@ pub fn parse_wham_usage_payload(payload: &Value) -> Option<CodexQuota> {
     })
 }
 
+pub fn parse_reset_credits_payload(payload: &Value) -> Option<CodexResetCredits> {
+    let credits = payload.get("credits").and_then(Value::as_array)?;
+    let mut available = credits
+        .iter()
+        .filter(|credit| {
+            credit
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| status.eq_ignore_ascii_case("available"))
+        })
+        .filter_map(|credit| {
+            let expires_at = credit
+                .get("expires_at")
+                .or_else(|| credit.get("expiresAt"))
+                .and_then(parse_timestamp_value)?;
+            Some(CodexResetCredit {
+                expires_at,
+                label: format_reset_credit_time(expires_at),
+            })
+        })
+        .collect::<Vec<_>>();
+    available.sort_by_key(|credit| credit.expires_at);
+
+    let available_count = payload
+        .get("available_count")
+        .or_else(|| payload.get("availableCount"))
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(available.len());
+    let label = format_reset_credit_chart_label_from_credits(&available, available_count, 3);
+    Some(CodexResetCredits {
+        available_count,
+        credits: available,
+        label,
+    })
+}
+
 pub fn parse_hermes_usage_payload(payload: &Value) -> Option<CodexQuota> {
     parse_wham_usage_payload(payload)
 }
 
 fn query_codex_app_server() -> Option<String> {
     query_codex_app_server_with_home(None)
+}
+
+fn query_codex_reset_credits(codex_home: Option<&Path>) -> Option<CodexResetCredits> {
+    let (access_token, account_id) = read_codex_auth(codex_home)?;
+    query_reset_credits_with_token(&access_token, account_id.as_deref(), "Codex Desktop")
+}
+
+fn query_reset_credits_with_token(
+    access_token: &str,
+    account_id: Option<&str>,
+    originator: &str,
+) -> Option<CodexResetCredits> {
+    let inferred_account_id = account_id
+        .map(str::to_string)
+        .or_else(|| account_id_from_jwt(access_token));
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(4))
+        .build();
+    let mut request = agent
+        .get("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .set("originator", originator)
+        .set("OAI-Product-Sku", "CODEX")
+        .set("Accept", "application/json")
+        .set("User-Agent", concat!("dexuse/", env!("CARGO_PKG_VERSION")));
+    if let Some(account_id) = inferred_account_id.as_deref() {
+        request = request.set("ChatGPT-Account-Id", account_id);
+    }
+    let response = request.call().ok()?;
+    let body = response.into_string().ok()?;
+    let payload = serde_json::from_str::<Value>(&body).ok()?;
+    parse_reset_credits_payload(&payload)
+}
+
+fn query_hermes_reset_credits() -> Option<CodexResetCredits> {
+    if std::env::var_os("DEXUSE_DISABLE_HERMES_QUOTA_BACKUP").is_some() {
+        return None;
+    }
+    let (access_token, account_id) = read_hermes_oauth_token()?;
+    query_reset_credits_with_token(&access_token, account_id.as_deref(), "hermes")
+}
+
+fn read_hermes_oauth_token() -> Option<(String, Option<String>)> {
+    let hermes_agent_dir = hermes_agent_dir()?;
+    let python = hermes_python(&hermes_agent_dir);
+    let script = r#"
+import json
+from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+try:
+    token_data = _read_codex_tokens()
+except Exception:
+    token_data = {}
+tokens = token_data.get('tokens') or {}
+access = str(creds.get('api_key') or '').strip()
+if not access:
+    raise SystemExit(0)
+account_id = str(tokens.get('account_id') or tokens.get('accountId') or '').strip()
+print(json.dumps({'access_token': access, 'account_id': account_id}, separators=(',', ':')))
+"#;
+    let child = Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .current_dir(hermes_agent_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let text = run_child_with_timeout(child, Duration::from_secs(8))?;
+    parse_oauth_token_payload(&text)
+}
+
+fn parse_oauth_token_payload(text: &str) -> Option<(String, Option<String>)> {
+    let payload = serde_json::from_str::<Value>(text.trim()).ok()?;
+    let access_token = payload
+        .get("access_token")
+        .or_else(|| payload.get("accessToken"))
+        .or_else(|| payload.get("api_key"))
+        .or_else(|| payload.get("apiKey"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let account_id = payload
+        .get("account_id")
+        .or_else(|| payload.get("accountId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    Some((access_token.to_string(), account_id))
+}
+
+fn query_openclaw_reset_credits() -> Option<CodexResetCredits> {
+    if std::env::var_os("DEXUSE_DISABLE_OPENCLAW_QUOTA_BACKUP").is_some() {
+        return None;
+    }
+    for path in openclaw_auth_profile_paths() {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(store) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some((access_token, account_id)) = select_openclaw_oauth_profile(&store) else {
+            continue;
+        };
+        if let Some(credits) =
+            query_reset_credits_with_token(&access_token, account_id.as_deref(), "openclaw")
+        {
+            return Some(credits);
+        }
+    }
+    None
+}
+
+fn read_codex_auth(codex_home: Option<&Path>) -> Option<(String, Option<String>)> {
+    let auth_path = codex_auth_path(codex_home)?;
+    let text = fs::read_to_string(auth_path).ok()?;
+    let store = serde_json::from_str::<Value>(&text).ok()?;
+    let tokens = store.get("tokens").unwrap_or(&store);
+    let access_token = tokens
+        .get("access_token")
+        .or_else(|| tokens.get("accessToken"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let account_id = tokens
+        .get("id_token")
+        .or_else(|| tokens.get("idToken"))
+        .and_then(Value::as_str)
+        .and_then(account_id_from_jwt)
+        .or_else(|| account_id_from_jwt(access_token))
+        .or_else(|| {
+            tokens
+                .get("account_id")
+                .or_else(|| tokens.get("accountId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    Some((access_token.to_string(), account_id))
+}
+
+fn codex_auth_path(codex_home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(codex_home) = codex_home {
+        return Some(codex_home.join("auth.json"));
+    }
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        return Some(PathBuf::from(codex_home).join("auth.json"));
+    }
+    Some(dirs::home_dir()?.join(".codex").join("auth.json"))
+}
+
+fn account_id_from_jwt(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = decode_base64_url(payload)?;
+    let claims = serde_json::from_slice::<Value>(&decoded).ok()?;
+    claims
+        .get("https://api.openai.com/auth")
+        .and_then(|auth| auth.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn decode_base64_url(input: &str) -> Option<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    for byte in input.bytes().filter(|byte| *byte != b'=') {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Some(output)
 }
 
 fn query_codex_app_server_with_home(codex_home: Option<&std::path::Path>) -> Option<String> {
@@ -574,6 +834,30 @@ fn reset_at_snake(window: &Value) -> Option<i64> {
         .map(|dt| dt.timestamp())
 }
 
+fn parse_timestamp_value(value: &Value) -> Option<i64> {
+    if let Some(number) = value.as_f64() {
+        return Some(if number > 1_000_000_000_000.0 {
+            (number / 1000.0) as i64
+        } else {
+            number as i64
+        });
+    }
+    let text = value.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(number) = text.parse::<f64>() {
+        return Some(if number > 1_000_000_000_000.0 {
+            (number / 1000.0) as i64
+        } else {
+            number as i64
+        });
+    }
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|dt| dt.timestamp())
+}
+
 fn window_seconds(window: &Value) -> Option<i64> {
     window
         .get("limit_window_seconds")
@@ -593,6 +877,50 @@ fn format_reset_time(unix_seconds: i64, include_day: bool) -> String {
         format!("{} {time}", dt.format("%a"))
     } else {
         time
+    }
+}
+
+fn format_reset_credit_time(unix_seconds: i64) -> String {
+    let Some(dt) = Local.timestamp_opt(unix_seconds, 0).single() else {
+        return "?".to_string();
+    };
+    let hour = dt.format("%I").to_string();
+    let hour = hour.trim_start_matches('0');
+    format!(
+        "{} {}:{}{}",
+        dt.format("%b %-d"),
+        hour,
+        dt.format("%M"),
+        dt.format("%P")
+    )
+}
+
+pub fn format_reset_credit_chart_label(credits: &CodexResetCredits, max_items: usize) -> String {
+    format_reset_credit_chart_label_from_credits(
+        &credits.credits,
+        credits.available_count,
+        max_items,
+    )
+}
+
+fn format_reset_credit_chart_label_from_credits(
+    credits: &[CodexResetCredit],
+    available_count: usize,
+    max_items: usize,
+) -> String {
+    if credits.is_empty() {
+        return format!("{available_count} banked");
+    }
+    let shown = credits
+        .iter()
+        .take(max_items)
+        .map(|credit| credit.label.as_str())
+        .collect::<Vec<_>>();
+    let hidden = available_count.saturating_sub(shown.len());
+    if hidden == 0 {
+        shown.join(" • ")
+    } else {
+        format!("{} +{hidden}", shown.join(" • "))
     }
 }
 
@@ -769,6 +1097,90 @@ mod tests {
                 seven_day_resets_at: 1781138432,
             })
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "local timezone FFI is not supported by Miri on Windows"
+    )]
+    fn parses_available_reset_credit_expiry_dates_without_credit_ids() {
+        let payload = serde_json::json!({
+            "available_count": 3,
+            "credits": [
+                { "id": "secret-id-ignored", "status": "used", "expires_at": 1780513413 },
+                { "id": "secret-id-ignored", "status": "available", "expires_at": "2026-06-05T14:15:00Z" },
+                { "id": "secret-id-ignored", "status": "AVAILABLE", "expiresAt": 1780513413000.0 },
+                { "id": "secret-id-ignored", "status": "available", "expiresAt": "1780600000" }
+            ]
+        });
+
+        let credits = parse_reset_credits_payload(&payload).unwrap();
+
+        assert_eq!(credits.available_count, 3);
+        assert_eq!(
+            credits
+                .credits
+                .iter()
+                .map(|credit| credit.expires_at)
+                .collect::<Vec<_>>(),
+            vec![1780513413, 1780600000, 1780668900]
+        );
+        assert_eq!(
+            serde_json::to_value(&credits).unwrap().get("id"),
+            None,
+            "reset credit ids must not be retained"
+        );
+    }
+
+    #[test]
+    fn reset_credit_chart_label_collapses_extra_dates() {
+        let credits = CodexResetCredits {
+            available_count: 3,
+            credits: vec![
+                CodexResetCredit {
+                    expires_at: 1780513413,
+                    label: "Jun 3 7:03pm".to_string(),
+                },
+                CodexResetCredit {
+                    expires_at: 1780600000,
+                    label: "Jun 4 7:06pm".to_string(),
+                },
+                CodexResetCredit {
+                    expires_at: 1780668900,
+                    label: "Jun 5 2:15pm".to_string(),
+                },
+            ],
+            label: String::new(),
+        };
+
+        assert_eq!(
+            format_reset_credit_chart_label(&credits, 2),
+            "Jun 3 7:03pm • Jun 4 7:06pm +1"
+        );
+    }
+
+    #[test]
+    fn parses_sanitized_oauth_token_payload() {
+        assert_eq!(
+            parse_oauth_token_payload(r#"{"access_token":" token ","account_id":" account "}"#),
+            Some(("token".to_string(), Some("account".to_string())))
+        );
+        assert_eq!(
+            parse_oauth_token_payload(r#"{"account_id":"account"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn extracts_chatgpt_account_id_from_jwt_claim() {
+        let token = concat!(
+            "header.",
+            "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF8xMjMifX0",
+            ".signature"
+        );
+
+        assert_eq!(account_id_from_jwt(token), Some("acct_123".to_string()));
     }
 
     #[test]

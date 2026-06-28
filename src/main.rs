@@ -4,7 +4,7 @@ use dexuse::{
     aggregate::aggregate,
     cli::{Args, parse_filter},
     output::print_json,
-    quota::fetch_codex_quota,
+    quota::{fetch_codex_quota, fetch_codex_reset_credits},
     sources::{builtin_harnesses, collect_harness_records},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,9 +20,13 @@ fn main() -> Result<()> {
     records.sort_by_key(|r| r.timestamp);
     let summary = aggregate(&records, &filter, args.granularity);
     if args.json {
-        print_json(&summary, fetch_codex_quota().map(Into::into))?;
+        print_json(
+            &summary,
+            fetch_codex_quota().map(Into::into),
+            fetch_codex_reset_credits(args.codex_home.as_deref()),
+        )?;
     } else {
-        dexuse::tui::run(records, filter, args.granularity)?;
+        dexuse::tui::run(records, filter, args.granularity, args.codex_home)?;
     }
     Ok(())
 }

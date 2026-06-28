@@ -32,6 +32,14 @@ const SCREENSHOT_CODEX_QUOTA = JSON.stringify({
   seven_day_remaining_percent: 19,
   seven_day_resets_at: 1781118213
 });
+const SCREENSHOT_CODEX_RESET_CREDITS = JSON.stringify({
+  available_count: 3,
+  credits: [
+    { status: 'available', expires_at: '2026-06-02T14:30:00Z' },
+    { status: 'available', expires_at: '2026-06-04T08:15:00Z' },
+    { status: 'available', expires_at: '2026-06-05T19:45:00Z' }
+  ]
+});
 fs.mkdirSync(OUT, { recursive: true });
 
 const scriptTimeout = setTimeout(() => {
@@ -183,7 +191,8 @@ async function capture(name, title, keys = []) {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       RUST_BACKTRACE: '1',
-      DEXUSE_CODEX_QUOTA_JSON: SCREENSHOT_CODEX_QUOTA
+      DEXUSE_CODEX_QUOTA_JSON: SCREENSHOT_CODEX_QUOTA,
+      DEXUSE_CODEX_RESET_CREDITS_JSON: SCREENSHOT_CODEX_RESET_CREDITS
     }
   });
 
