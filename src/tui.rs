@@ -22,7 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Chart, Dataset, GraphType,
-        LegendPosition, Paragraph, Row, Table, Tabs,
+        LegendPosition, Paragraph, Row, Table, Tabs, Wrap,
     },
 };
 use std::{
@@ -401,13 +401,110 @@ impl App {
     }
 
     fn draw_timeline(&self, f: &mut ratatui::Frame, area: Rect) {
+        let reset_panel_height = self.reset_credit_panel_height(area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .constraints([
+                Constraint::Min(8),
+                Constraint::Length(reset_panel_height),
+                Constraint::Min(7),
+            ])
             .split(area);
-        let (window_start, window_end) = self.timeline_bucket_window(chunks[1]);
+        let (window_start, window_end) = self.timeline_bucket_window(chunks[2]);
         self.draw_timeline_chart(f, chunks[0], window_start, window_end);
-        self.draw_bucket_table(f, chunks[1], window_start, window_end);
+        if reset_panel_height > 0 {
+            self.draw_reset_credits(f, chunks[1]);
+        }
+        self.draw_bucket_table(f, chunks[2], window_start, window_end);
+    }
+
+    fn reset_credit_panel_height(&self, area: Rect) -> u16 {
+        let Some(reset_credits) = &self.reset_credits else {
+            return 0;
+        };
+        if reset_credits.available_count == 0 {
+            return 0;
+        }
+        let visible_rows = reset_credits.credits.len().clamp(1, 3) as u16;
+        let desired = visible_rows + 2;
+        let max = area.height.saturating_sub(15).clamp(0, 5);
+        desired.min(max)
+    }
+
+    fn draw_reset_credits(&self, f: &mut ratatui::Frame, area: Rect) {
+        let Some(reset_credits) = &self.reset_credits else {
+            return;
+        };
+        let inner_rows = area.height.saturating_sub(2) as usize;
+        if inner_rows == 0 {
+            return;
+        }
+        let text = self.reset_credit_text_lines(inner_rows);
+        let block_title = if reset_credits.available_count == 1 {
+            " Codex reset credit "
+        } else {
+            " Codex reset credits "
+        };
+        f.render_widget(
+            Paragraph::new(text)
+                .block(fancy_block(block_title).border_style(Style::default().fg(PINK)))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+    }
+
+    fn reset_credit_text_lines(&self, max_lines: usize) -> Vec<Line<'static>> {
+        let Some(reset_credits) = &self.reset_credits else {
+            return Vec::new();
+        };
+        if max_lines == 0 {
+            return Vec::new();
+        }
+        if reset_credits.credits.is_empty() {
+            return vec![Line::from(vec![
+                Span::styled(
+                    reset_credits.available_count.to_string(),
+                    Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " banked; expiry details unavailable",
+                    Style::default().fg(MUTED),
+                ),
+            ])];
+        }
+
+        let detail_lines = max_lines.min(reset_credits.credits.len());
+        let mut lines = reset_credits
+            .credits
+            .iter()
+            .take(detail_lines)
+            .enumerate()
+            .map(|(i, credit)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("Reset {} ", i + 1),
+                        Style::default().fg(PINK).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(credit.label.clone(), Style::default().fg(TEXT)),
+                ])
+            })
+            .collect::<Vec<_>>();
+
+        let total_resets = reset_credits
+            .available_count
+            .max(reset_credits.credits.len());
+        let mut hidden = total_resets.saturating_sub(detail_lines);
+        if hidden > 0 {
+            if lines.len() == max_lines {
+                lines.pop();
+                hidden += 1;
+            }
+            lines.push(Line::from(vec![
+                Span::styled(format!("+{hidden} "), Style::default().fg(PINK)),
+                Span::styled("more banked reset credits", Style::default().fg(MUTED)),
+            ]));
+        }
+        lines
     }
 
     fn draw_timeline_chart(
@@ -1104,6 +1201,45 @@ mod tests {
         assert_eq!(markers[0], vec![(0.5, 0.0), (0.5, 100.0)]);
         assert_eq!(markers[1], vec![(1.75, 0.0), (1.75, 96.0)]);
         assert!(app.timeline_chart_title().contains("resets Jun 1 noon"));
+    }
+
+    #[test]
+    fn reset_credit_panel_shows_actual_reset_text_and_overflow_count() {
+        let mut app = app_with_days(&[1, 2, 3]);
+        app.reset_credits = Some(CodexResetCredits {
+            available_count: 4,
+            credits: vec![
+                CodexResetCredit {
+                    expires_at: 1,
+                    label: "Jul 12 9:08am".to_string(),
+                },
+                CodexResetCredit {
+                    expires_at: 2,
+                    label: "Jul 18 4:55am".to_string(),
+                },
+                CodexResetCredit {
+                    expires_at: 3,
+                    label: "Jul 27 4:08am".to_string(),
+                },
+            ],
+            label: "Jul 12 9:08am • Jul 18 4:55am • Jul 27 4:08am +1".to_string(),
+        });
+
+        let text = app
+            .reset_credit_text_lines(2)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            text,
+            vec!["Reset 1 Jul 12 9:08am", "+3 more banked reset credits"]
+        );
     }
 
     #[test]
